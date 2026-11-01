@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "社交发布助手",
+  "version": "1.8.0",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "action": {
+    "default_title": "社交发布助手"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

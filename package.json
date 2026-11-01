@@ -1,0 +1,15 @@
+{
+  "name": "social-publish-assistant",
+  "version": "1.8.0",
+  "private": true,
+  "description": "Local multi-platform publishing form autofill browser extension",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "check": "node scripts.cjs check",
+    "package": "node scripts.cjs package"
+  }
+}
