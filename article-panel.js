@@ -19,7 +19,7 @@
     #preview{max-height:42vh;overflow:auto;border:1px solid #ccd0d8;padding:12px;overflow-wrap:anywhere}
     img{max-width:100%;height:auto} pre{overflow:auto;background:#f3f5f8;padding:8px} table{border-collapse:collapse} th,td{border:1px solid #ccd0d8;padding:4px} #status{white-space:pre-wrap} #close{float:right}
     </style><section aria-label="${zhihu ? '知乎文章助手' : '头条文章助手'}"><button id="close" aria-label="关闭">×</button>
-    <h2>${zhihu ? '知乎' : '头条'}文章发布助手 1.9.23</h2><label>Markdown 文章 <input id="article" type="file" accept=".md,.markdown,text/markdown"></label>
+    <h2>${zhihu ? '知乎' : '头条'}文章发布助手 1.9.24</h2><label>Markdown 文章 <input id="article" type="file" accept=".md,.markdown,text/markdown"></label>
     <label>正文配图（可选，选三张 ${zhihu ? '' : '16:9 '}JPEG / PNG）<input id="images" type="file" accept="image/jpeg,image/png" multiple></label>
     ${zhihu ? '<label>文章封面（必选，16:9 JPEG / PNG）<input id="cover" type="file" accept="image/jpeg,image/png"></label><img id="coverPreview" alt="封面预览" hidden style="max-height:100px">' : ''}
     <label>文章标题 <input id="title" type="text"></label><div id="preview" aria-label="正文预览"></div>

@@ -19,7 +19,7 @@
     input[type=text],textarea{box-sizing:border-box;width:100%;padding:6px;font:inherit}
     #status{white-space:pre-wrap;overflow-wrap:anywhere} #close{float:right} small{display:block}
     </style><section aria-label="小红书长文助手">
-    <button id="close" aria-label="关闭">×</button><h2>小红书长文助手 1.9.23</h2>
+    <button id="close" aria-label="关闭">×</button><h2>小红书长文助手 1.9.24</h2>
     <label>多平台标题 TXT <input id="copy" type="file" accept=".txt,text/plain"></label>
     <small id="copySource"></small>
     <label>长文文件（可选，也可直接粘贴正文） <input id="article" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown"></label>
