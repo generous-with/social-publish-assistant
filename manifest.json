@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "社交发布助手",
-  "version": "1.8.0",
+  "version": "1.9.23",
   "permissions": [
     "activeTab",
     "scripting",

@@ -1,6 +1,6 @@
 {
   "name": "social-publish-assistant",
-  "version": "1.8.0",
+  "version": "1.9.23",
   "private": true,
   "description": "Local multi-platform publishing form autofill browser extension",
   "license": "MIT",

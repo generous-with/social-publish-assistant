@@ -6,7 +6,92 @@ try{
 if(location.origin!=='https://member.bilibili.com')throw Error('请打开B站投稿页');if(!data.title?.trim()||!data.description?.trim()||data.title.length>80||data.description.length>2000||(data.dynamic||'').length>233)throw Error('文案为空或超长；B站最多10个标签');
 const docs=[document];for(const frame of document.querySelectorAll('iframe')){try{if(frame.contentDocument)docs.push(frame.contentDocument);}catch{}}
 const visible=e=>e.getClientRects().length>0;const all=s=>docs.flatMap(d=>[...d.querySelectorAll(s)]).filter(visible);const clean=s=>s.replace(/[\u200b\ufeff]/g,'').trim();const field=(name,selector,fallback)=>{const found=new Set();for(const label of all('label,span,div,p').filter(e=>e.textContent.replace(/[\s*：:]/g,'').replace(/[（(](?:选填|可选|非必填)[）)]/g,'')===name&&!Array.from(e.children).some(c=>c.textContent.replace(/[\s*：:]/g,'').replace(/[（(](?:选填|可选|非必填)[）)]/g,'')===name))){let parent=label.parentElement;for(let n=0;n<7&&parent&&parent.tagName!=='BODY';n++,parent=parent.parentElement){const candidates=[...parent.querySelectorAll(selector)].filter(e=>visible(e)&&!e.classList.contains('ql-clipboard'));const a=candidates.filter(e=>!candidates.some(other=>other!==e&&other.contains(e)));if(a.length===1){found.add(a[0]);break;}if(a.length>1)break;}}if(found.size===1)return [...found][0];if(found.size>1)throw Error(name+'字段不唯一');const a=fallback?all(fallback).filter(e=>!e.classList.contains('ql-clipboard')):[];if(a.length===1)return a[0];throw Error('找不到唯一的B站“'+name+'”字段，请等待上传完成');};const pause=ms=>new Promise(r=>setTimeout(r,ms));const until=async(check,ms=4000)=>{const end=Date.now()+ms;do{const result=check();if(result)return result;await pause(100);}while(Date.now()<end);return null;};const click=e=>{for(const type of ['mousedown','mouseup','click'])e.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,view:e.ownerDocument.defaultView}));};const exact=text=>{const key=text.replace(/\s/g,'');const match=e=>!['SCRIPT','STYLE','NOSCRIPT'].includes(e.tagName)&&clean(e.innerText??e.textContent).replace(/\s/g,'')===key;const candidates=all('*').filter(e=>e.textContent.includes(text)&&match(e));return candidates.filter(e=>!candidates.some(child=>child!==e&&e.contains(child)));};const choose=async(control,text)=>{if(clean(control.textContent)===text||control.value===text)return;click(control);const options=await until(()=>{const a=exact(text).filter(e=>e!==control&&!e.contains(control));return a.length===1?a[0]:null;});if(!options)throw Error('未找到唯一选项“'+text+'”');click(options);await pause(150);if(!clean(control.textContent).includes(text)&&control.value!==text)throw Error('选项“'+text+'”未保留，请核对');};const set=(e,text)=>{e.focus();if(e.matches('input,textarea')){const view=e.ownerDocument.defaultView;Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?view.HTMLTextAreaElement.prototype:view.HTMLInputElement.prototype,'value').set.call(e,text);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}else{const view=e.ownerDocument.defaultView,selection=view.getSelection(),range=e.ownerDocument.createRange();range.selectNodeContents(e);selection.removeAllRanges();selection.addRange(range);const dt=new DataTransfer();dt.setData('text/plain',text);e.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt}));}e.blur();};const value=e=>e.matches('input,textarea')?e.value:clean(e.innerText);
-const selectionDebug=[];const results=[],errors=[];const step=async(name,fn)=>{try{const detail=await fn();results.push(name+'：'+(detail||'完成'));}catch(error){errors.push(name+'：'+error.message);}};const write=async(get,text)=>{let e=get();set(e,text);await pause(200);if(value(get())===text)return;e=get();if(!e.matches('input,textarea')){let quill;for(let parent=e,n=0;parent&&n<4;parent=parent.parentElement,n++){if(parent.__quill&&typeof parent.__quill.setText==='function'){quill=parent.__quill;break;}}if(!quill){try{const q=e.ownerDocument.defaultView.Quill?.find(e.closest('.ql-container'));if(typeof q?.setText==='function')quill=q;}catch{}}if(quill)quill.setText(text,'user');else{e.focus();const range=e.ownerDocument.createRange();range.selectNodeContents(e);const selection=e.ownerDocument.defaultView.getSelection();selection.removeAllRanges();selection.addRange(range);if(!e.ownerDocument.execCommand('insertText',false,text))throw Error('编辑器拒绝写入');}await pause(200);}if(value(get())!==text)throw Error('写入后回读不一致，请核对');};const chooseCurrent=async(get,text)=>{const selected=()=>{const e=get();return clean(e.textContent).includes(text)||e.value===text;};if(selected())return;const chooseOption=()=>{let options=exact(text).filter(e=>e!==get()&&!e.contains(get()));if(!options.length&&text==='人工智能')options=all('[data-tid="231"],[data-id="231"]');if(options.length!==1)return null;const leaf=options[0],parent=leaf.closest('li,[role=option],.type-item,.select-item');return parent&&clean(parent.textContent).length<100?parent:leaf;};const pointer=e=>{const view=e.ownerDocument.defaultView;for(const type of ['mouseover','mouseenter','mousemove','mousedown','mouseup','click'])e.dispatchEvent(new view.MouseEvent(type,{bubbles:true,cancelable:true,view}));};pointer(get());let option=await until(chooseOption,1500);if(!option&&text==='人工智能'){const parents=exact('科技数码').filter(e=>e!==get()&&!e.contains(get()));if(parents.length===1){pointer(parents[0]);option=await until(chooseOption,2500);}}if(!option){selectionDebug.push({target:text,control:{tag:get().tagName,class:get().className,text:clean(get().textContent).slice(0,60)},openNodes:all('*').filter(e=>e.textContent.includes(text)&&clean(e.textContent).length<100).slice(-25).map(e=>({tag:e.tagName,class:e.className,role:e.getAttribute('role'),text:clean(e.innerText??e.textContent).slice(0,80),parent:e.parentElement?.className}))});throw Error('下拉中未找到唯一选项“'+text+'”');}pointer(option);if(!await until(selected,2500))throw Error('已操作候选项但控件未显示“'+text+'”');};
+const selectionDebug=[];const results=[],errors=[];const step=async(name,fn)=>{try{const detail=await fn();results.push(name+'：'+(detail||'完成'));}catch(error){errors.push(name+'：'+error.message);}};const write=async(get,text)=>{let e=get();set(e,text);await pause(200);if(value(get())===text)return;e=get();if(!e.matches('input,textarea')){let quill;for(let parent=e,n=0;parent&&n<4;parent=parent.parentElement,n++){if(parent.__quill&&typeof parent.__quill.setText==='function'){quill=parent.__quill;break;}}if(!quill){try{const q=e.ownerDocument.defaultView.Quill?.find(e.closest('.ql-container'));if(typeof q?.setText==='function')quill=q;}catch{}}if(quill)quill.setText(text,'user');else{e.focus();const range=e.ownerDocument.createRange();range.selectNodeContents(e);const selection=e.ownerDocument.defaultView.getSelection();selection.removeAllRanges();selection.addRange(range);if(!e.ownerDocument.execCommand('insertText',false,text))throw Error('编辑器拒绝写入');}await pause(200);}if(value(get())!==text)throw Error('写入后回读不一致，请核对');};const chooseCurrent=async(get,text)=>{
+  const control=get();
+  const isCategory=text==='人工智能';
+  const selected=()=>{const e=get();return clean(e.textContent).includes(text)||e.value===text;};
+  if(selected())return;
+
+  const listSelector='div,ul,ol,section,[role=listbox]';
+  const beforeOpen=isCategory?new Set(all(listSelector)):null;
+  const beforeOptions=isCategory?new Set(exact(text)):null;
+  const controlledList=()=>control.ownerDocument.getElementById(control.getAttribute('aria-controls')||'');
+  const belongsToMenu=e=>!isCategory||!beforeOptions.has(e)||controlledList()?.contains(e);
+  const chooseOption=()=>{
+    const current=get();
+    const isOption=e=>e!==current&&!e.contains(current)&&!current.contains(e)&&belongsToMenu(e);
+    let options=exact(text).filter(isOption);
+    if(!options.length&&isCategory){
+      options=all('[data-tid="231"],[data-id="231"]').filter(e=>isOption(e)&&clean(e.textContent).includes(text));
+    }
+    if(options.length!==1)return null;
+    const leaf=options[0],parent=leaf.closest('li,[role=option],.type-item,.select-item');
+    return parent&&clean(parent.textContent).length<100?parent:leaf;
+  };
+  const pointer=e=>{
+    const view=e.ownerDocument.defaultView;
+    for(const type of ['mouseover','mouseenter','mousemove','mousedown','mouseup','click']){
+      e.dispatchEvent(new view.MouseEvent(type,{bubbles:true,cancelable:true,view}));
+    }
+  };
+  const scrollable=e=>{
+    const style=e.ownerDocument.defaultView.getComputedStyle(e);
+    return e.clientHeight>0&&e.scrollHeight>e.clientHeight+1&&/^(auto|scroll|overlay)$/.test(style.overflowY);
+  };
+  const menuLists=()=>{
+    const owned=controlledList();
+    return all(listSelector).filter(e=>e.ownerDocument===control.ownerDocument&&
+      !e.contains(control)&&(!beforeOpen.has(e)||owned?.contains(e))&&scrollable(e));
+  };
+  const searchByScrolling=async()=>{
+    for(const list of menuLists()){
+      if(list.scrollTop){
+        list.scrollTop=0;
+        await pause(100);
+      }
+      for(let page=0;page<64&&list.isConnected&&visible(list);page++){
+        const option=chooseOption();
+        if(option)return option;
+        const previous=list.scrollTop;
+        list.scrollTop=previous+Math.max(1,Math.floor(list.clientHeight*0.8));
+        if(list.scrollTop===previous)break;
+        await pause(100);
+      }
+    }
+    return chooseOption();
+  };
+  const revealInMenu=async option=>{
+    const lists=new Set(menuLists());
+    for(let list=option.parentElement;list&&list!==control.ownerDocument.body;list=list.parentElement){
+      if(!lists.has(list))continue;
+      const item=option.getBoundingClientRect(),viewport=list.getBoundingClientRect();
+      const top=viewport.top+list.clientTop,bottom=top+list.clientHeight;
+      if(item.top<top)list.scrollTop+=Math.floor(item.top-top);
+      else if(item.bottom>bottom)list.scrollTop+=Math.ceil(item.bottom-bottom);
+    }
+    await pause(100);
+    return chooseOption();
+  };
+
+  pointer(control);
+  let option=await until(chooseOption,isCategory?500:1500);
+  if(!option&&isCategory)option=await searchByScrolling();
+  if(!option&&isCategory){
+    const parents=exact('科技数码').filter(e=>e!==control&&!e.contains(control)&&!control.contains(e));
+    if(parents.length===1){
+      pointer(parents[0]);
+      option=await until(chooseOption,500)||await searchByScrolling();
+    }
+  }
+  if(option&&isCategory)option=await revealInMenu(option);
+  if(!option){
+    selectionDebug.push({target:text,control:{tag:control.tagName,class:control.className,text:clean(control.textContent).slice(0,60)},
+      scrollLists:isCategory?menuLists().map(e=>({class:e.className,top:e.scrollTop,height:e.clientHeight,total:e.scrollHeight})):[]});
+    throw Error('下拉中未找到唯一选项“'+text+'”');
+  }
+  pointer(option);
+  if(!await until(selected,2500))throw Error('已操作候选项但控件未显示“'+text+'”');
+};
 await step('标题',async()=>{const get=()=>field('标题','input,textarea','input[placeholder*=标题],input[maxlength="80"]');if(!overwrite&&value(get())&&value(get())!==data.title)return '保留原内容（勾选替换后可更新）';await write(get,data.title);});
 await step('简介',async()=>{const get=()=>{const matches=all('.ql-editor[data-placeholder*="填写更全面的相关信息"]');if(matches.length===1)return matches[0];return field('简介','textarea,[contenteditable=true]:not(.ql-clipboard)','.ql-editor[contenteditable=true]');};if(!overwrite&&value(get())&&value(get())!==data.description)throw Error('已有不同简介，请勾选替换');await write(get,data.description);});
 await step('分区',async()=>{await chooseCurrent(()=>field('分区','input,select,[role=combobox],.select-controller','.select-controller'),'人工智能');return '人工智能';});
