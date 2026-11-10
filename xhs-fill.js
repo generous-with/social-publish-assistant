@@ -1,19 +1,67 @@
 async function fillXhs(data,overwrite,mode='video'){try{
-const isArticle=mode==='article';
-if(location.origin!=='https://creator.xiaohongshu.com'||location.pathname!=='/publish/publish'||new URLSearchParams(location.search).get('target')!==mode)throw Error(isArticle?'请打开小红书长文发布表单':'请打开小红书视频发布页');const tags=[...new Set(data.tags||[])];if((!isArticle&&(!data.title?.trim()||data.title.length>20))||!data.description?.trim()||data.description.length+tags.reduce((n,t)=>n+t.length+2,0)>1000||tags.length>10)throw Error('标题限20字、正文含话题限1000字、话题最多10个');
+const isArticle=mode==='article', inspect=mode==='inspect-video';
+const target=new URLSearchParams(location.search).get('target');
+const routeMatches=target===(isArticle?'article':'video');
+const failMode=()=>({ok:false,message:isArticle?'请打开小红书长文发布表单':'请先切换到小红书视频发布页（「上传视频」），再打开助手或填写'});
+if(location.origin!=='https://creator.xiaohongshu.com'||location.pathname!=='/publish/publish')return failMode();
+if(!routeMatches){
+  if(isArticle||target!==null)return failMode();
+  const active=[...document.querySelectorAll('.header-tabs .creator-tab.active')]
+    .filter(node=>node.getClientRects().length).map(node=>node.textContent.trim());
+  // The same URL can display a video, image or long-form tab. Require positive video evidence.
+  const videoInput=()=>[...document.querySelectorAll('.upload-wrapper input[type="file"][accept]')].some(input=>
+      input.closest('.upload-wrapper')?.getClientRects().length&&
+      input.accept.split(',').some(type=>/^(?:video\/|\.(?:mp4|mov|flv|f4v|mkv|m4v|mpeg|ts)$)/i.test(type.trim())));
+  const videoEditor=()=>[...document.querySelectorAll('input[placeholder*="填写标题会有更多赞"]')]
+    .some(node=>node.getClientRects().length)&&
+    [...document.querySelectorAll('button,label,span')].some(node=>node.getClientRects().length&&
+      ['PK封面','更换视频'].includes(node.textContent.trim()));
+  const video=active.length?active.every(text=>text==='上传视频'||text==='发布视频'):videoInput()||videoEditor();
+  if(!video)return failMode();
+}
+if(inspect)return {ok:true};
+const tags=[...new Set(data.tags||[])];if((!isArticle&&(!data.title?.trim()||data.title.length>20))||!data.description?.trim()||data.description.length+tags.reduce((n,t)=>n+t.length+2,0)>1000||tags.length>10)throw Error('标题限20字、正文含话题限1000字、话题最多10个');
 const visible=e=>e.getClientRects().length>0;const all=(s,root=document)=>[...root.querySelectorAll(s)].filter(visible);const norm=s=>s.replace(/[\u200b\ufeff]/g,'').trim();const unique=(s,root=document)=>{const a=all(s,root);if(a.length!==1)throw Error('无法唯一定位：'+s+'（'+a.length+'个）');return a[0];};const sleep=ms=>new Promise(r=>setTimeout(r,ms));const until=async(fn,ms=5000)=>{const end=Date.now()+ms;do{const result=fn();if(result)return result;await sleep(100);}while(Date.now()<end);return null;};const exact=(text,root=document)=>all('button,label,span,div,p',root).filter(e=>norm(e.innerText??e.textContent)===text&&!Array.from(e.children).some(c=>norm(c.innerText??c.textContent)===text));const click=e=>{const view=e.ownerDocument.defaultView;for(const type of ['pointerdown','mousedown','pointerup','mouseup'])e.dispatchEvent(new view.MouseEvent(type,{bubbles:true,cancelable:true,view}));e.click();};const editor=()=>unique(isArticle?'.tiptap-container .tiptap.ProseMirror[contenteditable="true"]':'[contenteditable="true"]:not(.ql-clipboard)');const select=(e,append)=>{e.focus();const range=document.createRange();range.selectNodeContents(e);if(append)range.collapse(false);getSelection().removeAllRanges();getSelection().addRange(range);};const insert=(text,append)=>{select(editor(),append);if(!document.execCommand('insertText',false,text))throw Error('正文编辑器拒绝输入');};const results=[],errors=[];const step=async(name,fn)=>{try{results.push(name+'：'+(await fn()||'完成'));}catch(e){errors.push(name+'：'+e.message);}};
+const paragraphText=text=>norm(text).replace(/\u00a0/g,' ').replace(/\r\n?/g,'\n').replace(/[ \t]*\n[ \t\n]*/g,'\n');
+const stripTrailingTopics=text=>text.replace(/(?:\s*#[^#\n]+\[话题\]#)+\s*$/u,'');
 if(isArticle){
   unique('.img-list .flex-list');
   await step('发布描述',async()=>{
-    const paragraphText=text=>norm(text).replace(/\u00a0/g,' ').replace(/[ \t]*[\r\n]+[ \t\r\n]*/g,'\n');
-    const read=()=>paragraphText(editor().innerText.replace(/(?:\s*#[^#\n]+\[话题\]#)+\s*$/u,''));
+    const read=()=>paragraphText(stripTrailingTopics(editor().innerText));
     const expected=paragraphText(data.description);
     const current=read();
     if(current&&current!==expected&&!overwrite)throw Error('页面已有描述，请检查后勾选替换');
     if(current!==expected)insert(data.description,false);
     if(!await until(()=>read()===expected,1800))throw Error('回读与预览不一致');
   });
-}else await step('标题和正文',async()=>{const title=unique('input[placeholder*=标题],input[placeholder*=赞]');if(!overwrite&&((title.value.trim()&&title.value!==data.title)||(norm(editor().innerText)&&norm(editor().innerText)!==data.description)))throw Error('页面已有不同文案，请勾选替换');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(title,data.title);title.dispatchEvent(new Event('input',{bubbles:true}));title.dispatchEvent(new Event('change',{bubbles:true}));insert(data.description,false);await sleep(150);if(title.value!==data.title||norm(editor().innerText)!==data.description)throw Error('回读不一致');});
+}else await step('标题和正文',async()=>{
+  const getTitle=()=>unique('input[placeholder*=标题],input[placeholder*=赞]');
+  const getDescription=()=>{
+    const current=editor(), descriptor=current.pmViewDesc, model=descriptor?.node;
+    const rendered=descriptor?.dom===current&&typeof model?.textBetween==='function'?
+      model.textBetween(0,model.content.size,'\n',leaf=>
+        ['hardBreak','hard_break'].includes(leaf.type.name)?'\n':''):
+      current.innerText;
+    return paragraphText(stripTrailingTopics(rendered));
+  };
+  const expected=paragraphText(data.description);
+  const title=getTitle(), current=getDescription();
+  if(!overwrite&&((title.value.trim()&&title.value!==data.title)||(current&&current!==expected))){
+    throw Error('页面已有不同文案，请勾选替换');
+  }
+  if(title.value!==data.title){
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(title,data.title);
+    title.dispatchEvent(new Event('input',{bubbles:true}));
+    title.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  if(current!==expected)insert(data.description,false);
+  await sleep(150);
+  if(await until(()=>getTitle().value===data.title&&getDescription()===expected,1800))return;
+  if(getTitle().value!==data.title){
+    throw Error('标题回读不一致（预期 '+data.title.length+' 字，页面 '+getTitle().value.length+' 字）');
+  }
+  throw Error('简介回读不一致（预期 '+expected.length+' 字符，页面 '+getDescription().length+' 字符），已暂停追加话题');
+});
 if(!errors.length&&tags.length)await step('话题',async()=>{
   const clean=text=>text.replace(/[\u200b\ufeff]/g,'').replace(/\u00a0/g,' ');
   const chipNames=()=>new Set([
@@ -78,7 +126,7 @@ if(!errors.length&&tags.length)await step('话题',async()=>{
     const addition=(/\s$/.test(before)?'':' ')+'#'+keyword;
     const previous=firstSuggestion();
     insert(addition,true);
-    if(isArticle&&!caretAfterTopic(keyword)){
+    if(!caretAfterTopic(keyword)){
       if(!removeQuery(before,addition))throw Error('无法定位话题末尾或安全清理搜索文字，请检查正文');
       return {error:'无法将光标定位到话题末尾'};
     }
@@ -87,7 +135,7 @@ if(!errors.length&&tags.length)await step('话题',async()=>{
       const next=firstSuggestion();
       if(next&&(next.row!==previous?.row||next.name!==previous.name))return next;
     },4500);
-    if(suggestion&&(!isArticle||caretAfterTopic(keyword))){
+    if(suggestion&&caretAfterTopic(keyword)){
       if(existing.has(suggestion.name)){
         if(!removeQuery(before,addition))throw Error('无法安全清理话题“'+keyword+'”的搜索文本，请检查简介末尾');
         return {name:suggestion.name};
@@ -110,5 +158,5 @@ if(!errors.length&&tags.length)await step('话题',async()=>{
   return '已确认 '+chipNames().size+' 个'+(matched.length?'，'+matched.join('、'):'');
 });
 await step('原创声明',async()=>{if(data.original===false)return '未启用自动声明';const getSwitch=()=>{let switches=all('.original-wrapper .d-switch');if(switches.length===1)return switches[0];const labels=exact('原创声明');const found=new Set();for(const label of labels){let parent=label.parentElement;for(let n=0;n<4&&parent;n++,parent=parent.parentElement){const a=all('[role=switch],.d-switch,input[type=checkbox]',parent);if(a.length===1){found.add(a[0]);break;}if(a.length>1)break;}}if(found.size!==1)throw Error('找不到唯一原创声明开关');return [...found][0];};const enabled=()=>{const sw=getSwitch(),input=sw.matches('input')?sw:sw.querySelector('input');return Boolean(input?.checked)||sw.getAttribute('aria-checked')==='true';};if(enabled())return '已开启，跳过重复声明';const findDialog=()=>{const roots=all('[role=dialog],.d-modal,.d-dialog,.d-modal-container,.el-dialog,.modal');const a=roots.filter(e=>e.textContent.includes('声明原创')&&e.textContent.includes('我已阅读并同意'));return a.find(e=>!a.some(child=>child!==e&&e.contains(child)));};if(!findDialog())click(getSwitch());const dialog=await until(findDialog);if(!dialog)throw Error('未找到原创声明协议弹窗');const agree=[...dialog.querySelectorAll('input[type=checkbox]')];if(!agree.length)agree.push(...all('[role=checkbox]',dialog));if(agree.length!==1)throw Error('协议复选框不唯一');const isChecked=()=>agree[0].checked===true||agree[0].getAttribute('aria-checked')==='true';if(!isChecked()){const label=agree[0].closest('label')||agree[0].parentElement;const simulator=label?.querySelector('.d-checkbox-simulator');click(simulator||agree[0]);if(!await until(isChecked,1500))throw Error('未确认协议已勾选');}const confirm=all('button',dialog).filter(e=>norm(e.textContent)==='声明原创');if(confirm.length!==1||confirm[0].disabled)throw Error('声明原创按钮不可用');click(confirm[0]);if(!await until(enabled,3000))throw Error('声明后开关未开启');return '已勾选同意并声明原创';});
-return {ok:errors.length===0,message:results.concat(errors.map(s=>'未完成：'+s)).join('\n')+'\n请核对后手动发布。',diagnostics:errors.length?{version:'1.9.24',errors,editors:all('[contenteditable=true]').map(e=>({class:e.className,role:e.getAttribute('role'),placeholder:e.getAttribute('data-placeholder'),length:e.textContent.length})),switches:all('[role=switch],.d-switch').map(e=>({class:e.className,checked:e.getAttribute('aria-checked'),parent:e.parentElement?.className})),dialogs:all('[role=dialog],.d-modal,.d-dialog,.d-modal-container,.el-dialog,.modal').map(e=>({class:e.className,role:e.getAttribute('role')}))}:undefined};
+return {ok:errors.length===0,message:results.concat(errors.map(s=>'未完成：'+s)).join('\n')+'\n请核对后手动发布。',diagnostics:errors.length?{version:'1.9.30',errors,editors:all('[contenteditable=true]').map(e=>({class:e.className,role:e.getAttribute('role'),placeholder:e.getAttribute('data-placeholder'),length:e.textContent.length})),switches:all('[role=switch],.d-switch').map(e=>({class:e.className,checked:e.getAttribute('aria-checked'),parent:e.parentElement?.className})),dialogs:all('[role=dialog],.d-modal,.d-dialog,.d-modal-container,.el-dialog,.modal').map(e=>({class:e.className,role:e.getAttribute('role')}))}:undefined};
 }catch(e){return {ok:false,message:e.message};}}

@@ -19,7 +19,7 @@ Chrome / Edge Manifest V3 扩展。从本地多平台标题 TXT 提取文案，�
 | 抖音 | creator.douyin.com/creator-micro/content/post/video | 标题、简介、逐个话题和回车、自主声明（无需添加自主声明） |
 | 今日头条 | mp.toutiao.com/profile_v4/xigua/upload-video | 标题、简介、搜索候选后逐个话题回车、作品声明（自行拍摄）、关注引导贴纸（智能添加） |
 | B站 | member.bilibili.com/platform/upload/video/frame | 标题、简介、标签、人工智能分区、个人观点声明、更多设置中的粉丝动态 |
-| 小红书视频 | creator.xiaohongshu.com/publish/publish?target=video | 标题、正文、逐个选择话题下拉首项、原创声明协议及确认 |
+| 小红书视频 | creator.xiaohongshu.com/publish/publish 的「上传视频」页（支持无 `target` 参数的入口） | 标题、正文、逐个选择话题下拉首项、原创声明协议及确认 |
 | 小红书长文 | creator.xiaohongshu.com/publish/publish?target=article | 长文、一键排版、两张配图、4:3 首图排序、发布描述、话题和原创声明 |
 | 知乎视频 | www.zhihu.com/upload-video | 标题、简介/正文，#后输入名称选择第一候选；个人观点标记、科技互联网领域 |
 | 知乎文章 | zhuanlan.zhihu.com/write 或草稿编辑页 | Markdown 标题和正文、三张正文配图、独立 16:9 封面 |

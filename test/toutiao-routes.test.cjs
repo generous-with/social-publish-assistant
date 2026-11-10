@@ -1,3 +1,4 @@
+const loadBackground = require('./load-background.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -11,14 +12,13 @@ test('Toutiao article and video routes load separate panels and reject crossed f
   let open, receive;
   const context = vm.createContext({
     URL,
-    importScripts() {},
     chrome: {
       action: { onClicked: { addListener(fn) { open = fn; } }, async setBadgeText() {}, async setTitle() {} },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
       scripting: { async executeScript(config) { injected.push(config); return []; } }
     }
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   await open({ id: 1, url: article + '?from=test' });
   await open({ id: 2, url: video });
   assert.deepEqual(Array.from(injected[0].files), ['markdown-it.min.js', 'article-markdown.js', 'article-panel.js']);
@@ -36,7 +36,7 @@ test('Toutiao video settings still run if filling topics fails', async () => {
   let receive;
   const calls = [];
   const context = vm.createContext({
-    URL, importScripts() {}, fillPlatform() {}, fillToutiaoVideoSettings() {},
+    URL, fillPlatform() {}, fillToutiaoVideoSettings() {},
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
@@ -46,7 +46,7 @@ test('Toutiao video settings still run if filling topics fails', async () => {
       } }
     }
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   const response = await new Promise(resolve => receive({ type: 'social-publish-fill' }, {
     url: 'https://mp.toutiao.com/profile_v4/xigua/upload-video', frameId: 0, tab: { id: 1 }
   }, resolve));
@@ -58,14 +58,14 @@ test('Zhihu article accepts the write page and auto-saved draft route only', asy
   let open, receive;
   const injected = [];
   const context = vm.createContext({
-    URL, importScripts() {}, fillZhihuArticle() {},
+    URL, fillZhihuArticle() {},
     chrome: {
       action: { onClicked: { addListener(fn) { open = fn; } }, async setBadgeText() {}, async setTitle() {} },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
       scripting: { async executeScript(config) { injected.push(config); return [{ result: { ok: true } }]; } }
     }
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   const origin = 'https://zhuanlan.zhihu.com';
   const data = { title: '示例', sections: ['<p>正文</p>'], imageCount: 0 };
   const submit = (url, type) => new Promise(resolve => receive({ type, data }, {

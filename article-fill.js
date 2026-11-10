@@ -82,6 +82,7 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
   const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
   const imageDrawer = () => [...document.querySelectorAll('.mp-ic-img-drawer')].find(visible);
   const uploadConfirm = '[data-e2e="imageUploadConfirm-btn"]';
+  let imageConfirmationAttempted = false;
   function findImageButton() {
     const scopes = [editor.closest('.syl-editor-wrap'), document].filter(Boolean);
     const action = 'button,[role="button"],.syl-toolbar-button,.syl-toolbar-tool';
@@ -161,8 +162,9 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
 
-      let confirmed = false, sawConfirm = false;
+      let confirmed = false, sawConfirm = false, changedBody = false, unsafeSelection = false;
       insertedImage = await waitFor(() => {
+        if (!editor.isConnected || !matchesBody()) return changedBody = true;
         if (uploadedImageCount() > before) return true;
         if (confirmed) return null;
         // The upload confirmation can be mounted outside the initial image drawer.
@@ -170,10 +172,17 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
         if (actions.length) sawConfirm = true;
         const action = actions.length === 1 ? actions[0] : null;
         if (!action || action.matches(':disabled,[aria-disabled="true"],[aria-busy="true"],.byte-btn-loading')) return null;
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed &&
+            (selection.anchorNode === editor || editor.contains(selection.anchorNode) ||
+             selection.focusNode === editor || editor.contains(selection.focusNode))) return unsafeSelection = true;
         confirmed = true;
+        imageConfirmationAttempted = true;
         action.click();
         return null;
       }, 45000);
+      if (changedBody) throw Error('上传时正文发生变化');
+      if (unsafeSelection) throw Error('插图光标变成了正文选区，已取消确认以保护正文');
       if (!insertedImage) {
         if (confirmed) throw Error('已点击图片上传的确定，但正文未出现图片');
         if (sawConfirm) throw Error('上传确认按钮未就绪，请检查图片上传状态');
@@ -181,7 +190,7 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
       }
       return insertedImage;
     } finally {
-      const close = insertedImage && imageDrawer()?.querySelector('.byte-drawer-close-icon');
+      const close = imageDrawer()?.querySelector('.byte-drawer-close-icon');
       if (close) {
         close.click();
         await waitFor(() => !imageDrawer(), 1800);
@@ -203,13 +212,44 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
   const plain = parts.join('\n');
   const expected = normalize(plain);
   const matchesBody = () => normalize(bodyText()) === expected;
-  async function writeBody() {
+  async function writeBody(replace = false) {
     const transfer = new DataTransfer();
     transfer.setData('text/html', sections.join(''));
     transfer.setData('text/plain', plain);
-    await select(editor, true);
+    await select(editor, replace ? undefined : true);
+    if (replace) {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount !== 1 ||
+          ![...editor.children].every(block => selection.containsNode(block, false))) return false;
+    }
     paste(transfer);
     return Boolean(await waitFor(matchesBody, 1800));
+  }
+  async function recoverBody() {
+    const restored = async () => {
+      await pause(200);
+      editor = getEditor();
+      return editor && matchesBody();
+    };
+    // Undo the native insertion first; that can preserve earlier images and article formatting.
+    if (!editor) return '插图后未找到正文编辑器，已停止，请从预览重新填写正文';
+    if (imageConfirmationAttempted && !imageDrawer()) {
+      editor.focus({ preventScroll: true });
+      const onMac = /Mac/.test(navigator.platform);
+      editor.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'z', code: 'KeyZ', ctrlKey: !onMac, metaKey: onMac,
+        bubbles: true, cancelable: true
+      }));
+      if (await waitFor(matchesBody, 450) && await restored()) {
+        return '插图时检测到正文变化，已撤销该次插图并恢复完整正文，请核对图片';
+      }
+    }
+    // Replace in one paste operation. A separate delete can leave an empty draft if paste fails.
+    editor = getEditor();
+    if (editor && await writeBody(!bodyEmpty()) && await restored()) {
+      return '插图时检测到正文变化，已恢复完整正文，请检查后补插图片';
+    }
+    return '插图时检测到正文变化，未能确认恢复，已停止；完整原稿仍在助手预览中';
   }
   function locateBoundary(offset) {
     let position = 0, lastTextBlock;
@@ -240,6 +280,7 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
   let offset = 0;
   for (const [index, image] of images.entries()) {
     if (bodyError) break;
+    imageConfirmationAttempted = false;
     offset += normalize(parts[index]).length;
     const boundary = locateBoundary(offset);
     if (!boundary) {
@@ -251,13 +292,10 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
     } catch (error) {
       failedImages.push((index + 1) + '（' + error.message + '）');
     }
+    await pause(200);
     editor = getEditor();
     if (!editor || !matchesBody()) {
-      if (editor && !imageDrawer() && await clearBody() && await writeBody()) {
-        bodyError = '插图时检测到正文变化，已恢复完整正文，请检查后补插图片';
-      } else {
-        bodyError = '插图时检测到正文变化，已停止后续插图，请核对';
-      }
+      bodyError = await recoverBody();
     }
   }
   const label = [...document.querySelectorAll('label')].find(node =>
@@ -267,8 +305,8 @@ async function fillToutiaoArticle({ title, sections, images, overwrite }) {
   await pause(100);
   if (!titleMatches()) await writeTitle();
   editor = getEditor();
-  if (!bodyError && (!editor || normalize(bodyText()) !== normalize(expected))) {
-    bodyError = '正文已写入，但与预览回读不一致，请核对正文';
+  if (!bodyError && (!editor || !matchesBody())) {
+    bodyError = await recoverBody();
   }
   const finalImageCount = editor ? uploadedImageCount() : 0;
   const messages = [titleMatches() ? '标题已填写' : '标题未确认，请核对页面',

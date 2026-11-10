@@ -46,10 +46,11 @@ test('Zhihu Markdown mode keeps the byline and closing section while assigning t
   assert.doesNotMatch(article.sections.join(''), /<img/);
 });
 
-for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']) test('article body and images: ' + mode, async () => {
+for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body', 'upload-drawer-stays-open', 'body-cleared-after-upload', 'expanded-selection', 'undo-keeps-earlier-image']) test('article body and images: ' + mode, async () => {
   const actions = [], nodes = [{ textContent: '旧正文' }];
   let activeNode, drawerOpen = false, collapsed = false, selectedFile, uploaded = false;
   let caretRetries = 0;
+  let beforeInsert;
   class Textarea {
     get value() { return this.text || ''; }
     set value(text) { this.text = text; }
@@ -64,7 +65,13 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
   }
   let title = new Textarea();
   const checkbox = { checked: false };
-  const label = { textContent: '个人观点，仅供参考', querySelector: () => checkbox, click: () => { checkbox.checked = true; } };
+  const label = { textContent: '个人观点，仅供参考', querySelector: () => checkbox, click: () => {
+    checkbox.checked = true;
+    if (mode === 'body-cleared-after-upload') setTimeout(() => removeText(), 30);
+  } };
+  const removeText = () => {
+    for (let i = nodes.length - 1; i >= 0; i--) if (!nodes[i].src) nodes.splice(i, 1);
+  };
   const paragraph = text => ({
     textContent: text, scrollIntoView() {},
     contains: node => node?.parentElement?.textContent === text,
@@ -75,7 +82,10 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
       if (event.type !== 'change') return;
       [selectedFile] = this.files;
       uploaded = false;
-      setTimeout(() => { uploaded = true; }, 30);
+      setTimeout(() => {
+        if (mode === 'expanded-selection') { activeNode = editor; collapsed = false; }
+        uploaded = true;
+      }, 30);
     }
   };
   const rects = () => [1];
@@ -89,6 +99,7 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
       actions.push(file.name);
       const index = nodes.indexOf(activeNode);
       assert.ok(index >= 0);
+      beforeInsert = [...nodes];
       const img = {
         textContent: '', complete: true, naturalWidth: 1600, src: 'https://example.org/' + file.name,
         parentElement: editor, isConnected: true,
@@ -96,7 +107,8 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
       };
       nodes.splice(index, 0, img);
       if (mode === 'upload-corrupts-body') nodes.shift();
-      drawerOpen = false;
+      drawerOpen = mode === 'upload-drawer-stays-open';
+      if (drawerOpen || (mode === 'undo-keeps-earlier-image' && file.name === '2.png')) removeText();
       selectedFile = undefined;
     }
   };
@@ -107,7 +119,7 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
   };
   const drawer = { getClientRects: rects, querySelector: selector => selector.startsWith('.btn-upload-handle') ? input : null };
   const editor = {
-    isConnected: true, focus() {}, querySelector: () => null,
+    isConnected: true, focus() {}, querySelector: selector => selector === 'img,video' ? nodes.find(node => node.src) : null,
     closest: () => ({ querySelectorAll: () => [toolbarButton] }),
     contains: node => nodes.includes(node),
     get textContent() { return nodes.map(node => node.textContent).join(''); },
@@ -118,7 +130,11 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
       copy.querySelectorAll = () => this.textContent ? [] : [{ remove: () => { copy.textContent = ''; } }];
       return copy;
     },
-    dispatchEvent({ clipboardData }) {
+    dispatchEvent({ key, clipboardData }) {
+        if (key === 'z') {
+          if (mode === 'undo-keeps-earlier-image') nodes.splice(0, nodes.length, ...beforeInsert);
+          return;
+        }
         assert.equal(clipboardData.files.length, 0);
         if (!actions.includes('正文')) {
           assert.equal(title.value, '测试标题');
@@ -126,6 +142,7 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
         }
         actions.push('正文');
         if (mode !== 'rejected') {
+          if (activeNode === editor && !collapsed) nodes.length = 0;
           const html = mode === 'transformed' ? clipboardData.html.replace('<p>二</p>', '<p>貳</p>') : clipboardData.html;
           nodes.push(...[...html.matchAll(/<p>([^<]*)<\/p>/g)].map(m => paragraph(m[1])));
         }
@@ -164,10 +181,12 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
         // Simulate the first caret being replaced by the editor's selection reconciliation.
         collapsed = caretRetries++ > 0;
       },
+      rangeCount: 1, containsNode: node => activeNode === editor && !collapsed && nodes.includes(node),
       get isCollapsed() { return collapsed; }, get anchorNode() { return activeNode; }
     }) },
     DataTransfer: Transfer, ClipboardEvent: class { constructor(_, options) { Object.assign(this, options); } },
     File: class { constructor(_, name) { this.name = name; } }, HTMLTextAreaElement: Textarea, Event, atob, setTimeout,
+    KeyboardEvent: class { constructor(_, options) { Object.assign(this, options); } }, navigator: { platform: 'Win32' },
     getComputedStyle: () => ({ visibility: 'visible' }) };
   vm.runInNewContext(fs.readFileSync(require.resolve('../article-fill.js'), 'utf8'), ctx);
   const images = [1, 2, 3].map(i => ({ name: i + '.png', type: 'image/png', base64: 'YQ==' }));
@@ -181,9 +200,20 @@ for (const mode of ['normal', 'transformed', 'rejected', 'upload-corrupts-body']
       ['一', '1.png', '二', '2.png', '三', '3.png', '四']);
     assert.match(result.message, /正文已确认 3\/3 张图片/);
   } else if (mode === 'upload-corrupts-body') {
-    assert.deepEqual(actions, ['清空', '正文', '1.png', '清空', '正文']);
+    assert.equal(actions.filter(action => action.endsWith('.png')).length, 1);
     assert.equal(editor.textContent, '一二三四');
     assert.match(result.message, /已恢复完整正文/);
+  } else if (mode === 'upload-drawer-stays-open' || mode === 'body-cleared-after-upload') {
+    assert.equal(editor.textContent, '一二三四', 'an image upload must never leave an image-only draft');
+    assert.match(result.message, /已恢复完整正文/);
+  } else if (mode === 'expanded-selection') {
+    assert.deepEqual(actions, ['清空', '正文']);
+    assert.equal(editor.textContent, '一二三四');
+    assert.match(result.message, /插图光标变成了正文选区/);
+  } else if (mode === 'undo-keeps-earlier-image') {
+    assert.deepEqual(actions, ['清空', '正文', '1.png', '2.png']);
+    assert.deepEqual(nodes.map(node => node.src?.split('/').at(-1) || node.textContent), ['一', '1.png', '二', '三', '四']);
+    assert.match(result.message, /已撤销该次插图并恢复完整正文/);
   } else {
     assert.deepEqual(actions, ['清空', '正文']);
     assert.match(result.message, /已暂停插图/);

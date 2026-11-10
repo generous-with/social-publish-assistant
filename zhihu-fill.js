@@ -52,7 +52,118 @@ await step('视频标记',async()=>{
 });
 await step('标题',async()=>{const title=getTitle();if(title.maxLength>0&&data.title.length>title.maxLength)throw Error('标题超过页面上限');if(!overwrite&&read(title)&&read(title)!==data.title)throw Error('已有不同标题，请勾选替换');setInput(title,data.title);await pause(150);if(read(getTitle())!==data.title)throw Error('标题未保留');});
 await step('简介',async()=>{const ed=getEd();if(!overwrite&&read(ed)&&canonical(read(ed))!==canonical(data.description))throw Error('已有不同简介，请勾选替换');if(ed.tagName==='TEXTAREA')setInput(ed,data.description);else{ed.focus();const range=document.createRange();range.selectNodeContents(ed);getSelection().removeAllRanges();getSelection().addRange(range);const transfer=new DataTransfer();transfer.setData('text/plain',data.description);await pause(60);ed.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));await pause(250);if(canonical(read(getEd()))!==canonical(data.description)){const root=getEd();if(root.classList.contains('public-DraftEditor-content'))throw Error('Draft.js未接受完整正文（预期'+data.description.length+'字，实际'+read(root).length+'字），停止话题以保护内容');insert(data.description,false);}}if(!await until(()=>canonical(read(getEd()))===canonical(data.description),2000))throw Error('正文回读不一致（预期'+data.description.length+'字，实际'+read(getEd()).length+'字）');bodyReady=true;});
-if(bodyReady)await step('话题',async()=>{let count=0;const selected=()=>getEd().querySelectorAll('[contenteditable=false],a[href*="/topic/"],[data-topic-id],[data-type=mention],.mention,.TopicLink').length;for(const tag of [...new Set(data.tags||[])]){const before=selected();insert(' #',true);await pause(100);insert(tag,true);const first=()=>{const ed=getEd(),controls=ed.getAttribute('aria-controls');const linked=controls&&document.getElementById(controls);const roots=linked&&visible(linked)?[linked]:all('[role=listbox],.Popover-content,.MentionSuggestions,.TopicSuggestions,.AutoComplete-menu,[data-topic-suggestions]');for(const root of roots){const rows=all('[role=option],.Menu-item,.List-item,li,.MentionSuggestions-entry,.TopicSuggestions-item,.Select-option',root);const outer=rows.filter(e=>!rows.some(other=>other!==e&&other.contains(e)));if(outer.length&&outer.some(row=>text(row).toLowerCase().includes(tag.toLowerCase())))return outer[0];}return null;};const candidate=await until(first,8000);if(!candidate)throw Error('输入#'+tag+'后未出现话题候选列表；已完成'+count+'个');click(candidate);if(!await until(()=>selected()>before,3000))throw Error('第一候选提交后未确认生成话题；已完成'+count+'个');count++;}return count+'个，按#→名称→第一候选逐个添加';});
+if(bodyReady)await step('话题',async()=>{
+  const menuSelector='.TopicSuggestion-Popover-container';
+  const key=value=>trim(value||'').replace(/^#+|#+$/g,'').trim().toLowerCase();
+  const selected=()=>all('.zed-topic[data-topic-id],a[href*="/topic/"],[data-topic-id],.TopicLink',getEd());
+  const toolbarButton=()=>{
+    const form=getEd().closest('.VideoUploadForm');
+    if(!form)return null;
+    const buttons=all('.WritePinToolbar button',form);
+    const marked=buttons.filter(button=>button.getAttribute('aria-label')==='话题'||
+      button.getAttribute('data-za-module')==='pin_edit_toolbar_topic_edit_button');
+    if(marked.length===1&&!marked[0].matches(':disabled,[aria-disabled=true]'))return marked[0];
+    // In this video editor's toolbar the first icon is the native topic command.
+    const bars=all('.WritePinToolbar',form);
+    const first=buttons[0];
+    return !marked.length&&bars.length===1&&first?.querySelector('svg')&&
+      !first.matches(':disabled,[aria-disabled=true]')?first:null;
+  };
+  const moveCaret=()=>{
+    const ed=getEd();
+    ed.focus();
+    const block=ed.querySelectorAll('[data-block=true]');
+    const tail=block[block.length-1]||ed;
+    const walker=document.createTreeWalker(tail,NodeFilter.SHOW_TEXT);
+    let leaf;
+    for(let node=walker.nextNode();node;node=walker.nextNode()){
+      if(node.data.replace(/[\u200b\ufeff]/g,''))leaf=node;
+    }
+    const selection=getSelection();
+    const range=document.createRange();
+    if(leaf)range.setStart(leaf,leaf.data.replace(/[\u200b\ufeff]+$/,'').length);
+    else{range.selectNodeContents(tail);range.collapse(false);}
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  const nativeRows=()=>{
+    const menus=all(menuSelector);
+    if(menus.length!==1)return [];
+    return all('[role=option]',menus[0]).map(row=>({
+      row,name:key(row.querySelector('.topic-name')?.textContent),
+      create:Boolean(row.querySelector('.new-topic'))||text(row).includes('创建新话题')
+    })).filter(item=>item.name);
+  };
+  const signature=items=>items.map(item=>item.name+':'+item.create).join('|');
+  const legacyFirst=tag=>{
+    const ed=getEd(),id=ed.getAttribute('aria-controls');
+    const linked=id&&document.getElementById(id);
+    const roots=linked&&visible(linked)?[linked]:all('.MentionSuggestions,.TopicSuggestions,[data-topic-suggestions]');
+    for(const root of roots){
+      const rows=all('[role=option],.MentionSuggestions-entry,.TopicSuggestions-item',root);
+      if(rows.some(row=>key(text(row)).includes(tag))){
+        const row=rows.find(row=>!row.querySelector('.new-topic')&&!text(row).includes('创建新话题'));
+        if(row)return {row};
+      }
+    }
+    return null;
+  };
+  let count=0;
+  for(const tag of [...new Set(data.tags||[])]){
+    const before=selected().length;
+    const button=toolbarButton();
+    const beforeHash=read(getEd());
+    if(button){
+      moveCaret();
+      await pause(80);
+      if(!/\s$/.test(getEd().textContent||'')){
+        // Separate the query from the preceding paragraph or topic before the toolbar inserts '#'.
+        if(!document.execCommand('insertText',false,' '))throw Error('无法在简介末尾输入话题分隔符');
+        await pause(80);
+      }
+      click(button);
+      if(!await until(()=>read(getEd()).endsWith('#')&&read(getEd())!==beforeHash,2000)){
+        throw Error('点击知乎话题按钮后未确认在简介末尾插入 #；已完成'+count+'个');
+      }
+    }else if(getEd().tagName==='TEXTAREA')insert(' #',true);
+    else{
+      moveCaret();
+      await pause(80);
+      if(!document.execCommand('insertText',false,' #'))throw Error('知乎正文编辑器未接受 #');
+    }
+    await pause(150);
+    const initial=signature(nativeRows());
+    if(getEd().tagName==='TEXTAREA')insert(tag,true);
+    else{
+      moveCaret();
+      await pause(80);
+      if(!document.execCommand('insertText',false,tag))throw Error('知乎正文编辑器未接受话题名称');
+    }
+    const tagKey=key(tag);
+    let creationOnly=false;
+    const candidate=await until(()=>{
+      const items=nativeRows();
+      if(items.length){
+        // Zhihu returns the exact keyword as a result or a "create" row; wait for this query,
+        // rather than selecting the recommendations displayed for a bare '#'.
+        if(signature(items)===initial||!items.some(item=>item.name===tagKey))return null;
+        const first=items.find(item=>!item.create&&!item.row.matches(':disabled,[aria-disabled=true]'));
+        creationOnly=!first;
+        return first||null;
+      }
+      return legacyFirst(tagKey);
+    },8000);
+    if(!candidate)throw Error((creationOnly?'未找到已有话题“'+tag+'”':'输入#'+tag+'后未出现话题候选列表')+'；已完成'+count+'个');
+    click(candidate.row);
+    if(!await until(()=>{
+      const topics=selected();
+      return topics.length>before&&(!candidate.name||topics.some(topic=>key(text(topic))===candidate.name));
+    },3000))throw Error('第一候选提交后未确认生成话题；已完成'+count+'个');
+    count++;
+  }
+  return count+'个，按顺序选择每次搜索的第一条已有话题';
+});
 async function choose(name,target,placeholder){
   const key=value=>trim(value||'').replace(/[\s*，,：:。；;！!（）()]/g,'');
   const targetKey=key(target);
@@ -153,5 +264,5 @@ async function choose(name,target,placeholder){
   if(!await until(selected,2500))throw Error('选择后未显示“'+target+'”');
 }
 await step('所属领域',async()=>{await choose('所属领域','科技互联网','选择领域');return '科技互联网';});
-return {ok:!errors.length,message:results.concat(errors.map(e=>'未完成：'+e)).join('\n')+'\n请检查后手动发布视频。',diagnostics:errors.length?{version:'1.9.24',errors,inputs:all('input,textarea').map(e=>({tag:e.tagName,class:e.className,placeholder:e.getAttribute('placeholder'),length:read(e).length})),editors:all('[contenteditable=true]').map(e=>({class:e.className,role:e.getAttribute('role'),length:read(e).length,blocks:e.querySelectorAll('[data-block=true]').length})),selectControls:all('.Select-button,button[role=combobox]').map(e=>({tag:e.tagName,class:e.className,text:text(e).slice(0,60)})),options:all('[role=option],.Select-option,.Menu-item,.List-item,.MentionSuggestions-entry').slice(0,20).map(e=>({tag:e.tagName,class:e.className,text:text(e).slice(0,60)}))}:undefined};
+return {ok:!errors.length,message:results.concat(errors.map(e=>'未完成：'+e)).join('\n')+'\n请检查后手动发布视频。',diagnostics:errors.length?{version:'1.9.30',errors,inputs:all('input,textarea').map(e=>({tag:e.tagName,class:e.className,placeholder:e.getAttribute('placeholder'),length:read(e).length})),editors:all('[contenteditable=true]').map(e=>({class:e.className,role:e.getAttribute('role'),length:read(e).length,blocks:e.querySelectorAll('[data-block=true]').length})),selectControls:all('.Select-button,button[role=combobox]').map(e=>({tag:e.tagName,class:e.className,text:text(e).slice(0,60)})),options:all('[role=option],.Select-option,.Menu-item,.List-item,.MentionSuggestions-entry').slice(0,20).map(e=>({tag:e.tagName,class:e.className,text:text(e).slice(0,60)}))}:undefined};
 }catch(e){return {ok:false,message:e.message};}}

@@ -1,3 +1,4 @@
+const loadBackground = require('./load-background.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -5,7 +6,9 @@ const vm = require('node:vm');
 const { parse } = require('../parser.js');
 const source = fs.readFileSync(require.resolve('../xhs-fill.js'), 'utf8');
 
-function editorFixture({ target = 'video', body = '', recommendations = {}, rejected = [] } = {}) {
+function editorFixture({ target = 'video', activeTab = '', videoCover = '', body = '', paragraphSpacing = target === 'article',
+  requireTopicCaret = target === 'article', rewriteBody = value => value, modelRead = false,
+  rerenderTitle = false, recommendations = {}, rejected = [] } = {}) {
   const queries = [];
   const chosen = [];
   let time = 0;
@@ -13,16 +16,20 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
   let selected = '';
   let offset = 0;
   const textNode = { get data() { return editor.textContent; } };
-  const title = { value: '', dispatchEvent() {} };
+  let title = { value: '', dispatchEvent() {} };
   const visible = node => Object.assign(node, { getClientRects: () => [1] });
   const editor = visible({
     textContent: body,
-    get innerText() { return target === 'article' ? this.textContent.replace(/\n/g, '\n\n') : this.textContent; },
+    get innerText() { return paragraphSpacing ? this.textContent.replace(/\n/g, '\n\n') : this.textContent; },
     querySelectorAll() { return []; },
     focus() {},
     dispatchEvent() {},
     getAttribute() { return null; },
   });
+  if (modelRead) {
+    Object.defineProperty(editor, 'innerText', { get: () => '渲染装饰 ' + editor.textContent });
+    editor.pmViewDesc = { dom: editor, node: { content: { size: 10 }, textBetween: () => editor.textContent } };
+  }
   const topicList = visible({
     querySelectorAll() {
       return (recommendations[pending] || []).map(name => {
@@ -35,7 +42,7 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
           dispatchEvent() {},
           click() {
             if (rejected.includes(pending)) return;
-            if (target === 'article' && (selection.anchorNode !== textNode || selection.anchorOffset !== textNode.data.length)) return;
+            if (requireTopicCaret && (selection.anchorNode !== textNode || selection.anchorOffset !== textNode.data.length)) return;
             chosen.push(name);
             editor.textContent = editor.textContent.slice(0, -pending.length) + '#' + name + '[话题]# ';
             pending = '';
@@ -58,7 +65,8 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
     toString() { return selected; },
   };
   const context = vm.createContext({
-    location: new URL('https://creator.xiaohongshu.com/publish/publish?target=' + target),
+    location: new URL('https://creator.xiaohongshu.com/publish/publish?' +
+      (target === null ? 'source=&published=true' : 'target=' + target)),
     URLSearchParams,
     setTimeout(fn, ms) { time += ms; fn(); },
     Date: { now: () => time },
@@ -68,6 +76,10 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
     getSelection: () => selection,
     document: {
       querySelectorAll(selector) {
+        if (selector === '.header-tabs .creator-tab.active') {
+          return activeTab ? [visible({ textContent: activeTab }), visible({ textContent: activeTab })] : [];
+        }
+        if (selector === 'button,label,span') return videoCover ? [visible({ textContent: videoCover })] : [];
         if (selector.startsWith('input[placeholder')) return [visible(title)];
         if (selector.includes('creator-editor-topic-container')) {
           return selector.includes('.item') ? topicList.querySelectorAll() : [topicList];
@@ -95,7 +107,8 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
           pending = '';
           return true;
         }
-        editor.textContent = editor.textContent.slice(0, offset) + value;
+        editor.textContent = editor.textContent.slice(0, offset) + (value.includes('\n') ? rewriteBody(value) : value);
+        if (rerenderTitle && value.includes('\n')) title = { value: '平台原来的标题', dispatchEvent() {} };
         pending = value.match(/#[^#]+$/)?.[0] || '';
         selection.anchorNode = null;
         if (pending) queries.push(pending);
@@ -109,8 +122,30 @@ function editorFixture({ target = 'video', body = '', recommendations = {}, reje
       tags.map(tag => '#' + tag).join(' ');
     return context.fillXhs({ ...parse(txt, '小红书'), original: false }, true, mode);
   };
-  return { fill, editor, chosen, queries };
+  return { fill, editor, title, chosen, queries };
 }
+
+test('Xiaohongshu video can fill a confirmed video tab even without a target parameter', async () => {
+  const page = editorFixture({ target: null, activeTab: '上传视频' });
+  assert.equal((await page.fill([])).ok, true);
+  assert.equal(page.title.value, '视频标题');
+  assert.equal(page.editor.textContent.trim(), '两行简介\n第二行');
+});
+
+test('Xiaohongshu recognizes video controls when the uploaded video form has no tab header', async () => {
+  const page = editorFixture({ target: null, videoCover: 'PK封面' });
+  assert.equal((await page.fill([])).ok, true);
+  assert.equal(page.title.value, '视频标题');
+});
+
+test('a Xiaohongshu URL without a target does not let video fill write into an article or image tab', async () => {
+  for (const activeTab of ['写长文', '上传图文', '']) {
+    const page = editorFixture({ target: null, activeTab, body: '原文' });
+    assert.equal((await page.fill([])).ok, false);
+    assert.equal(page.title.value, '');
+    assert.equal(page.editor.textContent, '原文');
+  }
+});
 
 test('Xiaohongshu article handles editor paragraph spacing and restores the caret before choosing each topic', async () => {
   const page = editorFixture({ target: 'article', recommendations: { '#AI': ['AI工具', 'AI'], '#教程': ['教程'] } });
@@ -118,6 +153,39 @@ test('Xiaohongshu article handles editor paragraph spacing and restores the care
   assert.equal(result.ok, true, result.message);
   assert.deepEqual(page.chosen, ['AI工具', '教程']);
   assert.equal(page.editor.textContent.trim(), '两行简介\n第二行 #AI工具[话题]# #教程[话题]#');
+});
+
+test('Xiaohongshu video appends each topic when the editor renders extra paragraph line breaks', async () => {
+  const page = editorFixture({ target: null, activeTab: '上传视频', paragraphSpacing: true, requireTopicCaret: true,
+    recommendations: { '#AI': ['AI工具', 'AI'], '#教程': ['教程'] } });
+  const result = await page.fill(['AI', '教程']);
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(page.chosen, ['AI工具', '教程']);
+  assert.equal(page.editor.textContent.trim(), '两行简介\n第二行 #AI工具[话题]# #教程[话题]#');
+});
+
+test('Xiaohongshu video does not append topics if the editor loses part of the description', async () => {
+  const page = editorFixture({ rewriteBody: value => value.split('\n')[0], recommendations: { '#AI': ['AI工具'] } });
+  const result = await page.fill(['AI']);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /简介.*回读不一致/);
+  assert.deepEqual(page.queries, []);
+  assert.equal(page.editor.textContent, '两行简介');
+});
+
+test('Xiaohongshu video reads the stored ProseMirror text rather than rendered decoration', async () => {
+  const page = editorFixture({ modelRead: true, recommendations: { '#AI': ['AI工具'] } });
+  const result = await page.fill(['AI']);
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(page.chosen, ['AI工具']);
+});
+
+test('Xiaohongshu video checks the current title after the form replaces its input', async () => {
+  const page = editorFixture({ rerenderTitle: true, recommendations: { '#AI': ['AI工具'] } });
+  const result = await page.fill(['AI']);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /标题回读不一致/);
+  assert.deepEqual(page.queries, []);
 });
 
 test('Xiaohongshu appends the first suggestion for each query even when a later row matches exactly', async () => {
@@ -154,20 +222,20 @@ test('The extension opens separate Xiaohongshu panels and dispatches video fill 
   let open, receive;
   const injected = [];
   const context = vm.createContext({
-    URL, importScripts() {}, fillXhs() {}, prepareXhsArticle() {},
+    URL, fillXhs() {}, prepareXhsArticle() {},
     chrome: {
       action: { onClicked: { addListener(fn) { open = fn; } }, async setBadgeText() {}, async setTitle() {} },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
       scripting: { async executeScript(options) { injected.push(options); return [{ result: { ok: true } }]; } },
     },
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   const page = 'https://creator.xiaohongshu.com/publish/publish?from=menu&target=';
   for (const target of ['article', 'video']) {
     const url = page + target;
     await open({ id: 1, url });
     const response = await new Promise(resolve => receive({ type: 'social-publish-fill' }, {
-      url, tab: { id: 1 },
+      url, frameId: 0, tab: { id: 1 },
     }, resolve));
     assert.equal(response.ok, target === 'video');
   }
@@ -177,12 +245,43 @@ test('The extension opens separate Xiaohongshu panels and dispatches video fill 
   assert.equal(injected[2].func.name, 'fillXhs');
 });
 
+test('the reported Xiaohongshu URL opens the video panel only when the page confirms video mode', async () => {
+  let open, receive;
+  const injected = [];
+  let video = true;
+  const url = 'https://creator.xiaohongshu.com/publish/publish?source=&published=true';
+  loadBackground(vm.createContext({
+    URL,
+    chrome: {
+      action: { onClicked: { addListener(fn) { open = fn; } }, async setBadgeText() {}, async setTitle() {} },
+      runtime: { onMessage: { addListener(fn) { receive = fn; } } },
+      scripting: { async executeScript(options) {
+        injected.push(options);
+        return [{ result: { ok: video, message: '结果' } }];
+      } },
+    },
+  }));
+  await open({ id: 1, url });
+  assert.equal(injected[0]?.func?.name, 'fillXhs');
+  assert.equal(injected[0].args[2], 'inspect-video');
+  assert.deepEqual(Array.from(injected[1].files), ['parser.js', 'panel.js']);
+  const submit = type => new Promise(resolve => receive({ type }, { url, frameId: 0, tab: { id: 1 } }, resolve));
+  assert.equal((await submit('social-publish-fill')).ok, true);
+  assert.equal(injected[2].func.name, 'fillXhs');
+  assert.equal((await submit('social-publish-fill-xhs-article')).ok, false);
+  assert.equal(injected.length, 3);
+  video = false;
+  await open({ id: 1, url });
+  assert.equal(injected.length, 4);
+  assert.equal(injected[3].args[2], 'inspect-video');
+});
+
 test('Xiaohongshu article dispatch finishes image preparation before filling publish details', async () => {
   let open, receive;
   const injected = [];
   let prepared = false;
   const context = vm.createContext({
-    URL, importScripts() {}, fillXhs() {}, prepareXhsArticle() {},
+    URL, fillXhs() {}, prepareXhsArticle() {},
     chrome: {
       action: { onClicked: { addListener(fn) { open = fn; } }, async setBadgeText() {}, async setTitle() {} },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
@@ -195,7 +294,7 @@ test('Xiaohongshu article dispatch finishes image preparation before filling pub
       } },
     },
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   const page = 'https://creator.xiaohongshu.com/publish/publish?target=';
   const data = { description: '描述', tags: ['话题'], original: true };
   const submit = target => new Promise(resolve => receive({
@@ -219,14 +318,14 @@ test('Xiaohongshu article dispatch finishes image preparation before filling pub
 test('Xiaohongshu article returns a concrete message when script injection throws before returning a promise', async () => {
   let receive;
   const context = vm.createContext({
-    URL, importScripts() {}, prepareXhsArticle() {},
+    URL, prepareXhsArticle() {},
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: { onMessage: { addListener(fn) { receive = fn; } } },
       scripting: { executeScript() { throw Error('无法注入当前标签页'); } },
     },
   });
-  vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
+  loadBackground(context);
   const result = await new Promise(resolve => {
     assert.equal(receive({ type: 'social-publish-fill-xhs-article', data: {} }, {
       url: 'https://creator.xiaohongshu.com/publish/publish?target=article', frameId: 0, tab: { id: 1 },

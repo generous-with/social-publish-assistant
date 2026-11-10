@@ -8,6 +8,11 @@ async function prepareXhsArticle(data) {
   });
   const onArticle = () => location.origin === 'https://creator.xiaohongshu.com' &&
     location.pathname === '/publish/publish' && new URLSearchParams(location.search).get('target') === 'article';
+  const panel = () => document.getElementById('social-publish-xhs-article-panel')?.shadowRoot;
+  const status = message => {
+    const node = panel()?.getElementById('status');
+    if (node) node.textContent = message;
+  };
   const visible = element => element.getClientRects().length && !element.closest('[aria-hidden="true"]');
   const one = (selector, root = document) => {
     const matches = [...root.querySelectorAll(selector)].filter(visible);
@@ -118,8 +123,7 @@ async function prepareXhsArticle(data) {
   }
   const imageFile = (id, label) => {
     // The panel and the page share the same file inputs across Chrome's two script worlds.
-    const root = document.getElementById('social-publish-xhs-article-panel')?.shadowRoot;
-    const file = root?.getElementById(id)?.files?.[0];
+    const file = panel()?.getElementById(id)?.files?.[0];
     if (!file || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
       throw Error('请选择' + label);
     }
@@ -131,6 +135,55 @@ async function prepareXhsArticle(data) {
     transfer.items.add(file);
     input.files = transfer.files;
     input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function layoutUpload() {
+    const label = '从本地上传';
+    const find = root => {
+      const items = new Set();
+      for (const menu of root.querySelectorAll('.image-menu,[role="menu"]')) {
+        if (!visible(menu)) continue;
+        const action = control('.menu-item,button,[role="button"],[role="menuitem"],label', label, menu);
+        if (action) { items.add(action); continue; }
+        const leaves = [...menu.querySelectorAll('div,span')].filter(node => visible(node) &&
+          node.getAttribute('aria-disabled') !== 'true' && node.textContent.trim() === label &&
+          !node.closest('button:disabled,[aria-disabled="true"]') &&
+          ![...node.children].some(child => child.textContent.trim() === label));
+        for (const leaf of leaves) items.add(leaf);
+      }
+      return items.size === 1 ? [...items][0] : null;
+    };
+    const coverCard = cover()?.closest('.cover-container');
+    return (coverCard && find(coverCard)) || find(document);
+  }
+  function chooseLayoutInput(upload) {
+    const acceptsImage = input => input?.type === 'file' && !input.disabled &&
+      input.accept.toLowerCase().split(',').some(value => /^(?:image\/(?:\*|png|jpe?g|webp)|\.(?:png|jpe?g|webp))$/.test(value.trim()));
+    const linked = upload.closest('label')?.control;
+    if (acceptsImage(linked)) return linked;
+    const prototype = HTMLInputElement.prototype;
+    const overrides = [];
+    let input;
+    // Capture only the synchronous picker call triggered by this specific menu action.
+    try {
+      for (const method of ['click', 'showPicker']) {
+        const original = prototype[method];
+        if (typeof original !== 'function') continue;
+        const own = Object.getOwnPropertyDescriptor(prototype, method);
+        prototype[method] = function (...args) {
+          if (acceptsImage(this)) { input ??= this; return; }
+          return original.apply(this, args);
+        };
+        overrides.push([method, own]);
+      }
+      upload.click();
+    } finally {
+      for (const [method, own] of overrides) {
+        if (own) Object.defineProperty(prototype, method, own);
+        else delete prototype[method];
+      }
+    }
+    if (!input) throw Error('未取得排版页的图片选择器。请关闭系统文件窗口（如有），再点「填写长文并排版」重试');
+    return input;
   }
 
   try {
@@ -179,6 +232,7 @@ async function prepareXhsArticle(data) {
       '标题或正文回读与预览不一致，已停在长文编辑页', 2000);
       progress.title = title;
       messages.push('长文标题和正文已填写');
+      status('长文已填写，正在等待一键排版预览…');
       const layout = await wait(() => control('button.next-btn', '一键排版'), '未找到「一键排版」');
       layout.click();
       await wait(compose, '一键排版尚未进入预览，请检查页面后重试', 45000);
@@ -196,30 +250,21 @@ async function prepareXhsArticle(data) {
       }
       if (!progress.layoutSource || coverImage() !== progress.layoutSource) {
         const previousImage = coverImage();
-        const anchor = cover().parentElement;
-        const bounds = anchor.getBoundingClientRect();
-        for (const type of ['mouseenter', 'mouseover', 'mousemove']) {
-          anchor.dispatchEvent(new MouseEvent(type, {
-            bubbles: type !== 'mouseenter', view: window,
-            clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2
-          }));
-        }
-        const upload = await wait(() => control('.image-menu .menu-item', '从本地上传'),
-          '未找到排版页「从本地上传」，请展开排版封面上的图片菜单');
-        // The platform creates a detached file input synchronously for this one menu action.
-        const prototype = HTMLInputElement.prototype;
-        const originalClick = prototype.click;
-        let input;
-        prototype.click = function () {
-          if (this.type === 'file' && !this.isConnected && this.accept.includes('image/png') && !input) {
-            input = this;
-            return;
+        status('排版已生成，正在定位「从本地上传」…');
+        if (!layoutUpload()) {
+          const anchor = cover().parentElement;
+          const bounds = anchor.getBoundingClientRect();
+          for (const type of ['mouseenter', 'mouseover', 'mousemove']) {
+            anchor.dispatchEvent(new MouseEvent(type, {
+              bubbles: type !== 'mouseenter', view: window,
+              clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2
+            }));
           }
-          return originalClick.call(this);
-        };
-        try { upload.click(); }
-        finally { prototype.click = originalClick; }
-        if (!input) throw Error('未取得排版页图片选择器');
+        }
+        const upload = await wait(layoutUpload,
+          '未找到排版页「从本地上传」，请展开排版封面上的图片菜单');
+        const input = chooseLayoutInput(upload);
+        status('正在上传排版配图，等待封面预览更新…');
         supply(input, layoutFile);
         progress.layoutSource = await wait(() => {
           const current = coverImage();
@@ -227,6 +272,7 @@ async function prepareXhsArticle(data) {
         }, '未确认排版配图上传成功，请检查排版页', 45000);
       }
       messages.push('排版配图已上传');
+      status('排版配图已上传，正在校验并生成图片编辑页…');
       progress.layoutSample = await coverSample();
       const next = await wait(compose, '未找到排版页「下一步」');
       next.click();
@@ -264,6 +310,7 @@ async function prepareXhsArticle(data) {
       const previous = new Set(imageCards(list).map(source).filter(Boolean));
       const input = list.closest('.img-list')?.querySelector('.top input[type="file"][multiple]');
       if (!input) return fail('未找到「图片编辑」的添加图片控件');
+      status('已进入「图片编辑」，正在添加 4:3 首图…');
       supply(input, firstFile);
       progress.firstSource = await wait(() => {
         const current = imageList();
